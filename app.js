@@ -391,24 +391,32 @@ $('copy-link').onclick = async () => {
 // ---------------------------------------------------------------- lobby settings
 const NUM_SETTINGS = ['board_size', 'start_hp', 'start_ap', 'start_range', 'expand_base', 'turn_minutes', 'ap_amount'];
 
+// Same defaults as schema.sql; used if a lobby is missing a value.
+const DEFAULTS = {
+  board_size: 15, start_hp: 3, start_ap: 0, start_range: 2, expand_base: 2,
+  turn_minutes: 30, ap_amount: 1, ap_interval_minutes: 1440, ap_time: '17:00:00',
+};
+
 function renderSettings() {
   const f = $('settings-form'), g = S.game, isHost = g.host_id === S.user.id;
   for (const el of f.elements) el.disabled = !isHost;
   $('settings-save').classList.toggle('hidden', !isHost);
-  $('settings-note').textContent = isHost ? '' : '(set by the host)';
+  $('settings-note').textContent = isHost ? '(defaults filled in, change anything you like)' : '(set by the host)';
   if (isHost && S.settingsDirty) return; // don't overwrite the host's unsaved edits
 
   const el = f.elements;
-  for (const k of NUM_SETTINGS) el[k].value = g[k];
-  const m = g.ap_interval_minutes, unit = m % 1440 === 0 ? 1440 : m % 60 === 0 ? 60 : 1;
+  for (const k of NUM_SETTINGS) el[k].value = g[k] ?? DEFAULTS[k];
+  const m = g.ap_interval_minutes ?? DEFAULTS.ap_interval_minutes;
+  const unit = m % 60 === 0 ? 60 : 1; // show daily drops as "24 hours"
   el.ap_unit.value = String(unit);
   el.ap_every.value = m / unit;
-  el.ap_time.value = g.ap_time.slice(0, 5);
-  if (![...el.timezone.options].some((o) => o.value === g.timezone)) {
-    el.timezone.insertAdjacentHTML('afterbegin', `<option>${esc(g.timezone)}</option>`);
+  el.ap_time.value = (g.ap_time ?? DEFAULTS.ap_time).slice(0, 5);
+  const tz = g.timezone ?? myTz;
+  if (![...el.timezone.options].some((o) => o.value === tz)) {
+    el.timezone.insertAdjacentHTML('afterbegin', `<option>${esc(tz)}</option>`);
   }
-  el.timezone.value = g.timezone;
-  el.classes_enabled.checked = g.classes_enabled;
+  el.timezone.value = tz;
+  el.classes_enabled.checked = !!g.classes_enabled;
 }
 
 $('settings-form').addEventListener('input', () => (S.settingsDirty = true));

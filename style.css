@@ -145,7 +145,7 @@ button:disabled { opacity: .35; cursor: not-allowed; }
 .settings .pair input { flex: 1; }
 .settings .pair select { width: auto; }
 label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
-label.check input { width: auto; margin: 0; }
+label.check input { width: 16px; height: 16px; margin: 0; padding: 0; flex: none; accent-color: var(--accent); }
 
 .class-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
 .class-card { text-align: left; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
