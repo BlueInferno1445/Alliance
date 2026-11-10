@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alliance</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#" class="logo">ALLIANCE</a>
+    <div id="whoami"></div>
+  </header>
+
+  <main>
+    <!-- ============ LOGIN ============ -->
+    <section id="view-auth" class="view hidden">
+      <div class="panel auth-box">
+        <h2>Enter the battlefield</h2>
+        <p id="config-warning" class="bad hidden">
+          The site isn't connected to a database yet. Fill in <code>config.js</code> (see README).
+        </p>
+        <form id="auth-form">
+          <label>Username <input id="auth-user" autocomplete="username" maxlength="20" required></label>
+          <label>Password <input id="auth-pass" type="password" autocomplete="current-password" required></label>
+          <div class="row">
+            <button type="submit" data-mode="login">Log in</button>
+            <button type="submit" data-mode="signup" class="ghost">Create account</button>
+          </div>
+          <p class="muted small">Usernames: 3–20 lowercase letters, numbers or _. Passwords: 6+ characters.</p>
+        </form>
+      </div>
+      <div class="panel rules" id="rules-auth"></div>
+    </section>
+
+    <!-- ============ LOBBY LIST ============ -->
+    <section id="view-lobby" class="view hidden">
+      <div class="lobby-grid">
+        <div>
+          <div class="panel">
+            <div class="row between"><h3>Your games</h3><button id="lobby-refresh" class="ghost small">Refresh</button></div>
+            <div id="lobby-mine" class="cards"></div>
+          </div>
+          <div class="panel">
+            <h3>Open lobbies</h3>
+            <div id="lobby-open" class="cards"></div>
+          </div>
+          <div class="panel">
+            <h3>Other games (spectate)</h3>
+            <div id="lobby-other" class="cards"></div>
+          </div>
+        </div>
+        <div>
+          <div class="panel">
+            <h3>Create a lobby</h3>
+            <form id="create-form">
+              <label>Lobby name <input id="create-name" maxlength="40" required placeholder="Friday night war"></label>
+              <label>Daily 5pm AP uses this timezone <select id="create-tz"></select></label>
+              <button type="submit">Create lobby</button>
+            </form>
+          </div>
+          <div class="panel rules" id="rules-lobby"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ GAME ============ -->
+    <section id="view-game" class="view hidden">
+      <div class="game-head">
+        <button id="back" class="ghost small">← Lobbies</button>
+        <h2 id="g-name"></h2>
+        <span id="g-status" class="badge"></span>
+        <span id="g-tz" class="muted small"></span>
+        <button id="copy-link" class="ghost small">Copy invite link</button>
+      </div>
+
+      <div id="waiting" class="panel hidden">
+        <h3>Waiting room</h3>
+        <p class="muted">Send friends the invite link. They create an account, open the link and press Join.
+          The host starts the game once everyone's in (minimum 2 players).</p>
+        <ul id="wait-list" class="wait-list"></ul>
+        <div class="row">
+          <button id="join-btn" class="hidden">Join this lobby</button>
+          <button id="start-btn" class="hidden">Start game</button>
+          <button id="leave-btn" class="ghost hidden">Leave lobby</button>
+        </div>
+      </div>
+
+      <div id="arena" class="game-grid hidden">
+        <div class="col-board">
+          <div id="winner" class="banner hidden"></div>
+          <div id="board"></div>
+          <p class="muted small">Edges wrap around. Shaded squares are within your range. Click a tank to target it.</p>
+        </div>
+        <div class="col-side">
+          <div class="panel clocks">
+            <div><label>Next AP (5pm)</label><span id="clock-ap">–</span></div>
+            <div><label>Your turn timer <span class="muted">(only you see this)</span></label><span id="clock-turn">–</span></div>
+          </div>
+          <div class="panel" id="me-panel"></div>
+          <div class="panel" id="actions"></div>
+          <div class="panel"><h3>Tanks</h3><ul id="player-list" class="player-list"></ul></div>
+        </div>
+      </div>
+
+      <div class="game-grid lower">
+        <div class="panel chat">
+          <h3>Chat</h3>
+          <div id="chat-log" class="chat-log"></div>
+          <form id="chat-form">
+            <div id="chat-to" class="chips"></div>
+            <div class="row">
+              <input id="chat-input" maxlength="500" placeholder="Message…" autocomplete="off">
+              <button type="submit">Send</button>
+            </div>
+          </form>
+        </div>
+        <div class="panel">
+          <h3>Battle log</h3>
+          <ul id="event-log" class="event-log"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+
+  <template id="rules-tpl">
+    <h3>How to play</h3>
+    <ul>
+      <li>Everyone starts on a random square of a 15×15 board (edges wrap) with <b>3 HP</b> and <b>0 AP</b>.</li>
+      <li>Every day at <b>5pm</b> each surviving tank gains <b>1 AP</b>.</li>
+      <li><b>Mobilise</b> (1 AP): move one square up, down, left or right.</li>
+      <li><b>Attack</b> (1 AP): deal 1 damage to a tank within your range (starts as a circle of radius 2).</li>
+      <li><b>Supply</b> (1 AP): give 1 AP to a tank within your range.</li>
+      <li><b>Expand</b> (2 AP, +1 each time): permanently increase your range by 1.</li>
+      <li>After any action a private <b>30-minute turn timer</b> starts. Acting again before it ends costs +1 AP extra
+        for each action already taken in that window, and restarts the timer.</li>
+      <li>At 0 HP your tank is removed from the board for good. No hearts, no revives, no jury, no supply drops.</li>
+      <li>Last tank standing wins.</li>
+    </ul>
+  </template>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
