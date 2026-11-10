@@ -6,7 +6,7 @@ const EMAIL_DOMAIN = 'players.alliance.game';
 
 const CLASSES = {
   bunker:       { name: 'Bunker',       icon: '🛡️', desc: () => '+1 HP.' },
-  skirmisher:   { name: 'Skirmisher',   icon: '💨', desc: () => 'Moving costs 1 less turn-timer surcharge (2 quick moves = 1+1, 3 = 4 AP total).' },
+  skirmisher:   { name: 'Skirmisher',   icon: '💨', desc: () => 'Reduce the turn timer penalty by 1 AP when moving' },
   blitz:        { name: 'Blitz',        icon: '⚡', desc: () => 'Start with +1 AP.' },
   overclock:    { name: 'Overclock',    icon: '⏱️', desc: (g) => `Shorter turn timer: ${fmtMinutes((g?.turn_minutes ?? 30) * 5 / 6)} instead of ${g?.turn_minutes ?? 30} min.` },
   artillery:    { name: 'Artillery',    icon: '🎯', desc: () => '+1 range, but cannot shoot the 4 squares directly touching you.' },
