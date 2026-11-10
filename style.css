@@ -139,6 +139,22 @@ button:disabled { opacity: .35; cursor: not-allowed; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
 #toast.bad { background: #4a1f1f; border-color: #803030; }
 
+.settings { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.settings .wide { grid-column: 1 / -1; }
+.settings .pair { display: flex; gap: 6px; }
+.settings .pair input { flex: 1; }
+.settings .pair select { width: auto; }
+label.check { display: flex; align-items: center; gap: 8px; color: var(--text); }
+label.check input { width: auto; margin: 0; }
+
+.class-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.class-card { text-align: left; background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  font-weight: 400; padding: 10px; }
+.class-card b { display: block; font-size: 14px; margin-bottom: 2px; }
+.class-card span { font-size: 12.5px; color: var(--muted); }
+.class-card.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: #1f3326; }
+.class-tag { font-size: 11px; color: var(--muted); margin-left: 4px; }
+
 @media (max-width: 860px) {
   .lobby-grid, .game-grid, .game-grid.lower { grid-template-columns: 1fr; }
   main { padding: 10px; }

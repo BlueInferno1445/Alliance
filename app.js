@@ -3,7 +3,16 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
 // Usernames are turned into a dummy email so Supabase's password login can be used.
 const EMAIL_DOMAIN = 'players.alliance.game';
-const TURN_MS = 30 * 60 * 1000;
+
+const CLASSES = {
+  bunker:       { name: 'Bunker',       icon: '🛡️', desc: () => '+1 HP.' },
+  skirmisher:   { name: 'Skirmisher',   icon: '💨', desc: () => 'Moving costs 1 less turn-timer surcharge (2 quick moves = 1+1, 3 = 4 AP total).' },
+  blitz:        { name: 'Blitz',        icon: '⚡', desc: () => 'Start with +1 AP.' },
+  overclock:    { name: 'Overclock',    icon: '⏱️', desc: (g) => `Shorter turn timer: ${fmtMinutes((g?.turn_minutes ?? 30) * 5 / 6)} instead of ${g?.turn_minutes ?? 30} min.` },
+  artillery:    { name: 'Artillery',    icon: '🎯', desc: () => '+1 range, but cannot shoot the 4 squares directly touching you.' },
+  medic:        { name: 'Medic',        icon: '➕', desc: () => 'Repair: 2 AP (+1 each use) restores 1 HP to you or a tank in range (up to its starting HP).' },
+  sharpshooter: { name: 'Sharpshooter', icon: '🔭', desc: () => 'Each shot has a 1 in 6 chance to deal 2 damage.' },
+};
 
 const configured = !SUPABASE_URL.includes('YOUR-') && !SUPABASE_ANON_KEY.includes('YOUR-');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
@@ -13,7 +22,7 @@ const S = {
   gameId: null, game: null, players: [], me: null, priv: null,
   events: [], messages: [],
   nextAp: null, clockOffset: 0, syncing: false,
-  selected: null, chatTo: new Set(),
+  selected: null, chatTo: new Set(), settingsDirty: false,
   channel: null, refreshTimer: null, lastPenalty: null, lobbyTimer: null,
 };
 
@@ -23,6 +32,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const now = () => Date.now() + S.clockOffset;
 const byId = (uid) => S.players.find((p) => p.user_id === uid);
+const hearts = (hp) => (hp <= 4 ? '♥'.repeat(Math.max(0, hp)) : `${hp}♥`);
+const classLabel = (k) => (CLASSES[k] ? `${CLASSES[k].icon} ${CLASSES[k].name}` : '');
 
 function toast(msg, bad = false) {
   const t = $('toast');
@@ -38,13 +49,27 @@ function show(view) {
 
 function fmtDuration(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   const pad = (n) => String(n).padStart(2, '0');
+  if (d) return `${d}d ${h}h ${pad(m)}m`;
   return h ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
+}
+
+function fmtMinutes(mins) {
+  const s = Math.round(mins * 60);
+  return s % 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s / 60} min`;
 }
 
 function fmtTime(ts) {
   return new Date(ts).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function scheduleText(g) {
+  const m = g.ap_interval_minutes, t = g.ap_time.slice(0, 5);
+  const every = m % 1440 === 0 ? (m === 1440 ? 'every day' : `every ${m / 1440} days`)
+    : m % 60 === 0 ? (m === 60 ? 'every hour' : `every ${m / 60} hours`)
+    : `every ${m} min`;
+  return `+${g.ap_amount} AP ${every} ${m % 1440 === 0 ? 'at' : 'from'} ${t} (${g.timezone})`;
 }
 
 function hue(name) {
@@ -53,23 +78,54 @@ function hue(name) {
   return h;
 }
 
+function wrapDelta(a, b) {
+  const n = S.game.board_size, d = Math.abs(a - b);
+  return Math.min(d, n - d);
+}
+
 function inRange(from, x, y) {
   if (from?.x == null || x == null) return false;
-  const n = S.game.board_size;
-  let dx = Math.abs(from.x - x), dy = Math.abs(from.y - y);
-  dx = Math.min(dx, n - dx);
-  dy = Math.min(dy, n - dy);
+  const dx = wrapDelta(from.x, x), dy = wrapDelta(from.y, y);
   return dx * dx + dy * dy <= from.reach * from.reach;
 }
 
-// Extra AP owed because the 30-minute turn timer is still running.
+const adjacent = (a, b) => wrapDelta(a.x, b.x) + wrapDelta(a.y, b.y) === 1;
+
+// ---------------------------------------------------------------- costs
+function turnMs() {
+  return (S.priv?.turn_seconds ?? (S.game?.turn_minutes ?? 30) * 60) * 1000;
+}
+
+// Extra AP owed because the turn timer is still running.
 function penalty() {
   const p = S.priv;
   if (!p?.last_action_at) return 0;
-  return now() - new Date(p.last_action_at).getTime() < TURN_MS ? p.streak : 0;
+  return now() - new Date(p.last_action_at).getTime() < turnMs() ? p.streak : 0;
 }
 
-for (const id of ['rules-auth', 'rules-lobby']) $(id).innerHTML = $('rules-tpl').innerHTML;
+function costOf(action, pen = penalty()) {
+  const me = S.me;
+  switch (action) {
+    case 'move':   return 1 + (me.tank_class === 'skirmisher' ? Math.max(0, pen - 1) : pen);
+    case 'expand': return me.expand_cost + pen;
+    case 'heal':   return me.heal_cost + pen;
+    default:       return 1 + pen;
+  }
+}
+
+// ---------------------------------------------------------------- static setup
+for (const id of ['rules-auth', 'rules-lobby']) {
+  $(id).innerHTML = $('rules-tpl').innerHTML;
+  $(id).querySelector('.class-rules').innerHTML = Object.values(CLASSES)
+    .map((c) => `<li><b>${c.icon} ${c.name}</b>: ${esc(c.desc(null))}</li>`).join('');
+}
+
+const myTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const zones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [myTz, 'UTC'];
+const tzOptions = zones.map((z) => `<option>${esc(z)}</option>`).join('');
+$('create-tz').innerHTML = tzOptions;
+$('create-tz').value = myTz;
+$('settings-tz').innerHTML = tzOptions;
 
 // ---------------------------------------------------------------- auth
 $('auth-form').addEventListener('submit', async (e) => {
@@ -128,11 +184,6 @@ window.addEventListener('hashchange', route);
 $('back').onclick = () => (location.hash = '');
 
 // ---------------------------------------------------------------- lobby list
-const tzSelect = $('create-tz');
-const myTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const zones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [myTz, 'UTC'];
-tzSelect.innerHTML = zones.map((z) => `<option ${z === myTz ? 'selected' : ''}>${esc(z)}</option>`).join('');
-
 async function openLobby() {
   show('lobby');
   clearInterval(S.lobbyTimer);
@@ -142,7 +193,7 @@ async function openLobby() {
 
 async function loadLobby() {
   const { data, error } = await sb.from('games')
-    .select('id,name,status,host_id,timezone,created_at,winner_id,players(user_id,username,alive)')
+    .select('id,name,status,host_id,timezone,classes_enabled,created_at,winner_id,players(user_id,username,alive)')
     .order('created_at', { ascending: false })
     .limit(60);
   if (error) return toast(error.message, true);
@@ -169,7 +220,7 @@ function gameCard(g, member) {
     ? `<button data-join="${g.id}" class="small">Join</button>`
     : `<button data-open="${g.id}" class="small ghost">${member ? 'Open' : 'Watch'}</button>`;
   return `<div class="card">
-    <div><b>${esc(g.name)}</b><span class="muted small">Host ${esc(host)} · ${info} · ${esc(g.timezone)}</span></div>
+    <div><b>${esc(g.name)}</b><span class="muted small">Host ${esc(host)} · ${info}${g.classes_enabled ? ' · classes' : ''}</span></div>
     <div class="row"><span class="badge ${g.status}">${g.status}</span>${btn}</div></div>`;
 }
 
@@ -184,7 +235,8 @@ $('lobby-refresh').onclick = loadLobby;
 $('create-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const { data, error } = await sb.rpc('create_game', {
-    p_name: $('create-name').value.trim(), p_timezone: tzSelect.value,
+    p_name: $('create-name').value.trim(), p_timezone: $('create-tz').value,
+    p_classes: $('create-classes').checked,
   });
   if (error) return toast(error.message, true);
   $('create-name').value = '';
@@ -208,6 +260,7 @@ async function openGame(id) {
   S.selected = null;
   S.chatTo = new Set();
   S.lastPenalty = null;
+  S.settingsDirty = false;
   show('game');
   $('board').innerHTML = '';
   $('chat-log').innerHTML = '';
@@ -239,7 +292,7 @@ function scheduleRefresh() {
   S.refreshTimer = setTimeout(refreshGame, 150);
 }
 
-// Asks the server to hand out any 5pm AP that is due, and learns the next 5pm.
+// Asks the server to hand out any AP drops that are due, and learns the next one.
 async function syncAp() {
   if (!S.gameId || S.syncing) return;
   S.syncing = true;
@@ -267,6 +320,7 @@ async function refreshGame() {
     location.hash = '';
     return;
   }
+  const wasWaiting = S.game?.status === 'waiting';
   S.game = g.data;
   S.players = p.data ?? [];
   S.priv = pr.data;
@@ -274,6 +328,7 @@ async function refreshGame() {
   S.messages = (msg.data ?? []).reverse();
   S.me = byId(S.user.id) ?? null;
   if (S.selected && !byId(S.selected)?.alive) S.selected = null;
+  if (wasWaiting && S.game.status === 'active') syncAp();
   renderGame();
 }
 
@@ -283,12 +338,13 @@ function renderGame() {
   $('g-name').textContent = g.name;
   $('g-status').textContent = g.status;
   $('g-status').className = 'badge ' + g.status;
-  $('g-tz').textContent = `5pm = ${g.timezone}`;
+  $('g-tz').textContent = `${scheduleText(g)} · ${g.turn_minutes}-min turn timer`
+    + (g.classes_enabled ? ' · classes on' : '');
 
   const waiting = g.status === 'waiting';
   $('waiting').classList.toggle('hidden', !waiting);
   $('arena').classList.toggle('hidden', waiting);
-  if (waiting) renderWaiting();
+  if (waiting) { renderWaiting(); renderSettings(); renderClassPicker(); }
   else { renderBoard(); renderMe(); renderActions(); renderPlayers(); }
 
   const winner = byId(g.winner_id);
@@ -313,7 +369,8 @@ function renderWaiting() {
 
 $('join-btn').onclick = () => joinGame(S.gameId);
 $('start-btn').onclick = async () => {
-  if (!confirm(`Start the game with ${S.players.length} players? Nobody else can join after this.`)) return;
+  if (S.settingsDirty && !confirm('You have unsaved settings changes. Start anyway with the saved settings?')) return;
+  if (!confirm(`Start the game with ${S.players.length} players? Nobody else can join and settings are locked after this.`)) return;
   const { error } = await sb.rpc('start_game', { p_game: S.gameId });
   if (error) return toast(error.message, true);
   await syncAp();
@@ -331,6 +388,71 @@ $('copy-link').onclick = async () => {
   catch { prompt('Copy this link:', location.href); }
 };
 
+// ---------------------------------------------------------------- lobby settings
+const NUM_SETTINGS = ['board_size', 'start_hp', 'start_ap', 'start_range', 'expand_base', 'turn_minutes', 'ap_amount'];
+
+function renderSettings() {
+  const f = $('settings-form'), g = S.game, isHost = g.host_id === S.user.id;
+  for (const el of f.elements) el.disabled = !isHost;
+  $('settings-save').classList.toggle('hidden', !isHost);
+  $('settings-note').textContent = isHost ? '' : '(set by the host)';
+  if (isHost && S.settingsDirty) return; // don't overwrite the host's unsaved edits
+
+  const el = f.elements;
+  for (const k of NUM_SETTINGS) el[k].value = g[k];
+  const m = g.ap_interval_minutes, unit = m % 1440 === 0 ? 1440 : m % 60 === 0 ? 60 : 1;
+  el.ap_unit.value = String(unit);
+  el.ap_every.value = m / unit;
+  el.ap_time.value = g.ap_time.slice(0, 5);
+  if (![...el.timezone.options].some((o) => o.value === g.timezone)) {
+    el.timezone.insertAdjacentHTML('afterbegin', `<option>${esc(g.timezone)}</option>`);
+  }
+  el.timezone.value = g.timezone;
+  el.classes_enabled.checked = g.classes_enabled;
+}
+
+$('settings-form').addEventListener('input', () => (S.settingsDirty = true));
+$('settings-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const el = e.target.elements;
+  const p = {};
+  for (const k of NUM_SETTINGS) p[k] = parseInt(el[k].value, 10);
+  p.ap_interval_minutes = parseInt(el.ap_every.value, 10) * parseInt(el.ap_unit.value, 10);
+  p.ap_time = el.ap_time.value || '17:00';
+  p.timezone = el.timezone.value;
+  p.classes_enabled = el.classes_enabled.checked;
+  if (Object.values(p).some((v) => typeof v === 'number' && Number.isNaN(v))) return toast('Fill in every setting', true);
+  if (p.ap_interval_minutes < 5 || p.ap_interval_minutes > 10080) return toast('AP interval must be between 5 minutes and 7 days', true);
+
+  const { error } = await sb.rpc('update_settings', { p_game: S.gameId, p });
+  if (error) return toast(error.message, true);
+  S.settingsDirty = false;
+  toast('Settings saved');
+  refreshGame();
+});
+
+function renderClassPicker() {
+  const visible = S.game.classes_enabled && !!S.me;
+  $('class-panel').classList.toggle('hidden', !visible);
+  if (!visible) return;
+  const mine = S.priv?.chosen_class ?? '';
+  const card = (key, title, desc) =>
+    `<button type="button" class="class-card ${mine === key ? 'on' : ''}" data-class="${key}"><b>${title}</b><span>${esc(desc)}</span></button>`;
+  $('class-list').innerHTML =
+    Object.entries(CLASSES).map(([k, c]) => card(k, `${c.icon} ${c.name}`, c.desc(S.game))).join('')
+    + card('', '🎲 Random', 'Get a random class when the game starts.');
+}
+
+$('class-list').addEventListener('click', async (e) => {
+  const b = e.target.closest('.class-card');
+  if (!b) return;
+  const { error } = await sb.rpc('choose_class', { p_game: S.gameId, p_class: b.dataset.class || null });
+  if (error) return toast(error.message, true);
+  toast(b.dataset.class ? `You'll play as ${CLASSES[b.dataset.class].name}` : 'Random class selected');
+  refreshGame();
+});
+
+// ---------------------------------------------------------------- board & panels
 function renderBoard() {
   const g = S.game, n = g.board_size, me = S.me;
   const board = $('board');
@@ -349,9 +471,10 @@ function renderBoard() {
       if (p) {
         if (p.user_id === S.user.id) cls.push('me');
         if (p.user_id === S.selected) cls.push('sel');
+        const klass = p.tank_class ? ` · ${CLASSES[p.tank_class]?.name}` : '';
         inner = `<div class="tank" style="--h:${hue(p.username)}" data-uid="${p.user_id}"
-          title="${esc(p.username)} · ${p.hp} HP · ${p.ap} AP · range ${p.reach}">
-          <span>${esc(p.username.slice(0, 3))}</span><i>${'♥'.repeat(p.hp)}</i></div>`;
+          title="${esc(p.username)}${klass} · ${p.hp}/${p.max_hp} HP · ${p.ap} AP · range ${p.reach}">
+          <span>${esc(p.username.slice(0, 3))}</span><i>${hearts(p.hp)}</i></div>`;
       }
       html += `<div class="${cls.join(' ')}">${inner}</div>`;
     }
@@ -370,19 +493,24 @@ $('player-list').addEventListener('click', (e) => selectTarget(e.target.closest(
 function renderMe() {
   const me = S.me;
   if (!me) { $('me-panel').innerHTML = '<p class="muted">You are spectating this game.</p>'; return; }
+  const klass = me.tank_class
+    ? `<p class="small" style="margin:8px 0 0"><b>${classLabel(me.tank_class)}</b> <span class="muted">${esc(CLASSES[me.tank_class].desc(S.game))}</span></p>` : '';
   $('me-panel').innerHTML = `<h3>Your tank ${me.alive ? '' : '<span class="bad">— destroyed</span>'}</h3>
     <div class="stats">
-      <div><b>${'♥'.repeat(me.hp) || '0'}</b><span>HP</span></div>
+      <div><b>${me.hp}/${me.max_hp}</b><span>HP</span></div>
       <div><b>${me.ap}</b><span>AP</span></div>
       <div><b>${me.reach}</b><span>Range</span></div>
       <div><b>${me.alive ? `${me.x},${me.y}` : '–'}</b><span>Position</span></div>
-    </div>`;
+    </div>${klass}`;
 }
 
 function moveBlocked(dir) {
   const n = S.game.board_size, me = S.me;
   let x = me.x, y = me.y;
-  if (dir === 'up') y--; if (dir === 'down') y++; if (dir === 'left') x--; if (dir === 'right') x++;
+  if (dir === 'up') y--;
+  if (dir === 'down') y++;
+  if (dir === 'left') x--;
+  if (dir === 'right') x++;
   x = (x + n) % n; y = (y + n) % n;
   return S.players.some((p) => p.alive && p.x === x && p.y === y);
 }
@@ -398,26 +526,37 @@ function renderActions() {
   S.lastPenalty = pen;
   const tgt = S.selected ? byId(S.selected) : null;
   const inR = tgt && inRange(me, tgt.x, tgt.y);
-  const c1 = 1 + pen, ce = me.expand_cost + pen;
-  const dis = (cost, extra = false) => (me.ap < cost || extra ? 'disabled' : '');
+  const tooClose = me.tank_class === 'artillery' && tgt && adjacent(me, tgt);
+  const cMove = costOf('move', pen), c1 = costOf('attack', pen), ce = costOf('expand', pen), ch = costOf('heal', pen);
+  const dis = (cost, blocked = false) => (me.ap < cost || blocked ? 'disabled' : '');
   const mv = (dir, label) =>
-    `<button class="${dir}" data-move="${dir}" ${dis(c1, moveBlocked(dir))} title="Mobilise ${dir}">${label}</button>`;
+    `<button class="${dir}" data-move="${dir}" ${dis(cMove, moveBlocked(dir))} title="Mobilise ${dir}">${label}</button>`;
+
+  let status = '<span class="muted">Click a tank to target it.</span>';
+  if (tgt) {
+    const where = !inR ? '<span class="bad">out of range</span>'
+      : tooClose ? '<span class="warn">too close for artillery fire</span>' : '<span class="ok">in range</span>';
+    status = `Target: <b>${esc(tgt.username)}</b> (${tgt.hp}/${tgt.max_hp} HP, ${tgt.ap} AP) ${where}`;
+  }
+
+  const medic = me.tank_class === 'medic' ? `
+    <button class="ghost" data-act="heal-self" ${dis(ch, me.hp >= me.max_hp)}>Repair yourself · ${ch} AP</button>
+    <button class="ghost" data-act="heal" ${dis(ch, !inR || !tgt || tgt.hp >= tgt.max_hp)}>Repair target · ${ch} AP</button>` : '';
 
   el.innerHTML = `
-    <h3>Actions ${pen ? `<span class="warn">turn timer running: +${pen} AP each</span>` : ''}</h3>
+    <h3>Actions ${pen ? `<span class="warn">turn timer running: +${pen} AP surcharge</span>` : ''}</h3>
     <div class="act-grid">
       <div class="dpad">
         ${mv('up', '▲')}${mv('left', '◀')}
-        <div class="mid">Mobilise<br>${c1} AP</div>
+        <div class="mid">Mobilise<br>${cMove} AP</div>
         ${mv('right', '▶')}${mv('down', '▼')}
       </div>
       <div class="act-btns">
-        <p class="target">${tgt
-          ? `Target: <b>${esc(tgt.username)}</b> (${tgt.hp} HP, ${tgt.ap} AP) ${inR ? '<span class="ok">in range</span>' : '<span class="bad">out of range</span>'}`
-          : '<span class="muted">Click a tank to target it.</span>'}</p>
-        <button class="attack" data-act="attack" ${dis(c1, !inR)}>Attack · ${c1} AP</button>
+        <p class="target">${status}</p>
+        <button class="attack" data-act="attack" ${dis(c1, !inR || tooClose)}>Attack · ${c1} AP</button>
         <button data-act="supply" ${dis(c1, !inR)}>Supply 1 AP · ${c1} AP</button>
         <button class="ghost" data-act="expand" ${dis(ce)}>Expand to range ${me.reach + 1} · ${ce} AP</button>
+        ${medic}
       </div>
     </div>`;
 }
@@ -425,24 +564,30 @@ function renderActions() {
 $('actions').addEventListener('click', (e) => {
   const b = e.target.closest('button');
   if (!b || b.disabled) return;
+  const act = b.dataset.act;
   if (b.dataset.move) doAction('move', { dir: b.dataset.move });
-  else if (b.dataset.act) doAction(b.dataset.act, { target: b.dataset.act === 'expand' ? null : S.selected });
+  else if (act === 'expand') doAction('expand');
+  else if (act === 'heal-self') doAction('heal', { target: S.user.id });
+  else if (act) doAction(act, { target: S.selected });
 });
 
 async function doAction(action, { dir = null, target = null } = {}) {
   const pen = penalty();
-  const base = action === 'expand' ? S.me.expand_cost : 1;
-  const cost = base + pen;
+  const base = costOf(action, 0);
+  const cost = costOf(action, pen);
   const tgt = target ? byId(target) : null;
-  if (pen > 0 && !confirm(`Your turn timer is still running, so this costs ${cost} AP instead of ${base}, and restarts the 30-minute timer. Continue?`)) return;
+  if (cost > base && !confirm(`Your turn timer is still running, so this costs ${cost} AP instead of ${base}, and restarts the timer. Continue?`)) return;
   if (action === 'attack' && !confirm(`Fire at ${tgt.username}?`)) return;
-  if (action === 'expand' && !pen && !confirm(`Spend ${cost} AP to expand your range to ${S.me.reach + 1}?`)) return;
+  if (action === 'expand' && cost === base && !confirm(`Spend ${cost} AP to expand your range to ${S.me.reach + 1}?`)) return;
 
   const { error } = await sb.rpc('act', {
     p_game: S.gameId, p_action: action, p_target: target, p_dir: dir, p_max_cost: cost,
   });
   if (error) return toast(error.message, true);
-  toast({ move: 'Moved', attack: 'Direct hit!', supply: `Sent 1 AP to ${tgt?.username}`, expand: 'Range expanded' }[action]);
+  toast({
+    move: 'Moved', attack: 'Shot fired!', supply: `Sent 1 AP to ${tgt?.username}`,
+    expand: 'Range expanded', heal: target === S.user.id ? 'Repaired yourself' : `Repaired ${tgt?.username}`,
+  }[action]);
   refreshGame();
 }
 
@@ -452,10 +597,11 @@ function renderPlayers() {
   $('player-list').innerHTML = list.map((p) => {
     const cls = [!p.alive && 'dead', p.user_id === S.selected && 'sel'].filter(Boolean).join(' ');
     const near = p.alive && S.me?.alive && p.user_id !== S.user.id && inRange(S.me, p.x, p.y) ? ' <span class="ok small">in range</span>' : '';
-    const meta = p.alive ? `${'♥'.repeat(p.hp)} · ${p.ap} AP · R${p.reach}` : 'destroyed';
+    const klass = p.tank_class ? `<span class="class-tag">${classLabel(p.tank_class)}</span>` : '';
+    const meta = p.alive ? `${hearts(p.hp)} · ${p.ap} AP · R${p.reach}` : 'destroyed';
     return `<li class="${cls}" data-uid="${p.user_id}">
       <span class="dot" style="--h:${hue(p.username)}"></span>
-      <span>${esc(p.username)}${p.user_id === S.user.id ? ' <span class="muted small">(you)</span>' : ''}${near}</span>
+      <span>${esc(p.username)}${p.user_id === S.user.id ? ' <span class="muted small">(you)</span>' : ''}${klass}${near}</span>
       <span class="meta">${meta}</span></li>`;
   }).join('');
 }
@@ -523,7 +669,7 @@ function tick() {
   }
 
   const last = S.priv?.last_action_at ? new Date(S.priv.last_action_at).getTime() : 0;
-  const rem = last + TURN_MS - now();
+  const rem = last + turnMs() - now();
   if (!S.me?.alive || g.status !== 'active') {
     turnEl.textContent = '–'; turnEl.className = '';
   } else if (rem > 0) {
@@ -533,7 +679,7 @@ function tick() {
   }
 
   // Re-draw costs the moment the turn timer runs out
-  if (S.lastPenalty !== null && penalty() !== S.lastPenalty) renderActions();
+  if (S.lastPenalty !== null && S.me?.alive && penalty() !== S.lastPenalty) renderActions();
 }
 
 let ticks = 0;

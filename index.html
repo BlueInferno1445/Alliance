@@ -55,7 +55,9 @@
             <h3>Create a lobby</h3>
             <form id="create-form">
               <label>Lobby name <input id="create-name" maxlength="40" required placeholder="Friday night war"></label>
-              <label>Daily 5pm AP uses this timezone <select id="create-tz"></select></label>
+              <label>Timezone for AP drops <select id="create-tz"></select></label>
+              <label class="check"><input type="checkbox" id="create-classes"> Enable tank classes</label>
+              <p class="muted small">You can change every rule (HP, AP schedule, turn timer…) in the lobby before starting.</p>
               <button type="submit">Create lobby</button>
             </form>
           </div>
@@ -74,15 +76,45 @@
         <button id="copy-link" class="ghost small">Copy invite link</button>
       </div>
 
-      <div id="waiting" class="panel hidden">
-        <h3>Waiting room</h3>
-        <p class="muted">Send friends the invite link. They create an account, open the link and press Join.
-          The host starts the game once everyone's in (minimum 2 players).</p>
-        <ul id="wait-list" class="wait-list"></ul>
-        <div class="row">
-          <button id="join-btn" class="hidden">Join this lobby</button>
-          <button id="start-btn" class="hidden">Start game</button>
-          <button id="leave-btn" class="ghost hidden">Leave lobby</button>
+      <div id="waiting" class="game-grid hidden">
+        <div>
+          <div class="panel">
+            <h3>Waiting room</h3>
+            <p class="muted">Send friends the invite link. They create an account, open the link and press Join.
+              The host starts the game once everyone's in (minimum 2 players).</p>
+            <ul id="wait-list" class="wait-list"></ul>
+            <div class="row">
+              <button id="join-btn" class="hidden">Join this lobby</button>
+              <button id="start-btn" class="hidden">Start game</button>
+              <button id="leave-btn" class="ghost hidden">Leave lobby</button>
+            </div>
+          </div>
+          <div class="panel hidden" id="class-panel">
+            <h3>Choose your class</h3>
+            <p class="muted small">Hidden from other players until the game starts. If you don't pick one, you get a random class.</p>
+            <div id="class-list" class="class-list"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Game settings <span id="settings-note" class="muted small"></span></h3>
+          <form id="settings-form" class="settings">
+            <label>Board size <input type="number" name="board_size" min="5" max="30"></label>
+            <label>Starting HP <input type="number" name="start_hp" min="1" max="10"></label>
+            <label>Starting AP <input type="number" name="start_ap" min="0" max="20"></label>
+            <label>Starting range <input type="number" name="start_range" min="1" max="15"></label>
+            <label>Expand starting cost <input type="number" name="expand_base" min="1" max="10"></label>
+            <label>Turn timer (minutes) <input type="number" name="turn_minutes" min="1" max="1440"></label>
+            <label>AP per drop <input type="number" name="ap_amount" min="1" max="10"></label>
+            <label>AP drop every
+              <span class="pair"><input type="number" name="ap_every" min="1" max="10080">
+                <select name="ap_unit"><option value="1">minutes</option><option value="60">hours</option><option value="1440">days</option></select></span>
+            </label>
+            <label>Drop time of day <input type="time" name="ap_time"></label>
+            <label>Timezone <select name="timezone" id="settings-tz"></select></label>
+            <label class="check wide"><input type="checkbox" name="classes_enabled"> Tank classes enabled</label>
+            <p class="muted small wide">For intervals shorter than a day, drops line up with the time of day (e.g. every 6 hours from 5pm = 5am, 11am, 5pm, 11pm).</p>
+            <button type="submit" id="settings-save" class="wide">Save settings</button>
+          </form>
         </div>
       </div>
 
@@ -94,7 +126,7 @@
         </div>
         <div class="col-side">
           <div class="panel clocks">
-            <div><label>Next AP (5pm)</label><span id="clock-ap">–</span></div>
+            <div><label>Next AP drop</label><span id="clock-ap">–</span></div>
             <div><label>Your turn timer <span class="muted">(only you see this)</span></label><span id="clock-turn">–</span></div>
           </div>
           <div class="panel" id="me-panel"></div>
@@ -126,7 +158,7 @@
   <div id="toast"></div>
 
   <template id="rules-tpl">
-    <h3>How to play</h3>
+    <h3>How to play <span class="muted small">(default settings, the host can change them)</span></h3>
     <ul>
       <li>Everyone starts on a random square of a 15×15 board (edges wrap) with <b>3 HP</b> and <b>0 AP</b>.</li>
       <li>Every day at <b>5pm</b> each surviving tank gains <b>1 AP</b>.</li>
@@ -139,6 +171,8 @@
       <li>At 0 HP your tank is removed from the board for good. No hearts, no revives, no jury, no supply drops.</li>
       <li>Last tank standing wins.</li>
     </ul>
+    <h3>Classes <span class="muted small">(if the lobby turns them on)</span></h3>
+    <ul class="class-rules"></ul>
   </template>
 
   <script type="module" src="app.js"></script>

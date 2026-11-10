@@ -60,33 +60,43 @@ editing the page.
 | Range | Circular with wrap-around: in range if dx² + dy² ≤ range² |
 | End | Last tank alive wins |
 
+These are the defaults. In the waiting room the host can change the board size, starting HP/AP/range,
+Expand's starting cost, turn timer length, AP per drop, how often AP drops (every N minutes, hours
+or days), the drop time of day, the timezone, and whether classes are on. Everything locks when
+the game starts.
+
+### Classes (optional, toggled per lobby)
+
+Players pick a class in the waiting room. Nobody else can see it until the game starts, and anyone
+who doesn't pick gets a random one.
+
+| Class | Effect |
+|---|---|
+| 🛡️ Bunker | +1 HP |
+| 💨 Skirmisher | Moving costs 1 less turn-timer surcharge (2 quick moves = 1+1, 3 quick moves = 4 total) |
+| ⚡ Blitz | Start with +1 AP |
+| ⏱️ Overclock | Turn timer is 5/6 as long (25 min when the lobby uses 30) |
+| 🎯 Artillery | +1 range, but cannot shoot the 4 squares directly touching it (diagonals are fine; supplying still works) |
+| ➕ Medic | Repair action: 2 AP (+1 each use) restores 1 HP to itself or a tank in range, up to that tank's starting HP |
+| 🔭 Sharpshooter | Each shot has a 1 in 6 chance to deal 2 damage |
+
 Not included, as requested: hearts, gifting hearts, supply drops, revives and the jury.
 
 ## Notes
 
-- **No scheduler needed.** The 5pm AP is added the next time anyone opens the game or acts, and it
-  catches up if several 5pms were missed. Everyone's displayed AP is always correct once the page
-  loads.
-- **Who can see what.** Everyone can see the board, HP, AP and range. Only you can see your own turn
-  timer. Private chat messages are visible only to the sender and the chosen recipients.
+- **No scheduler needed.** AP drops are added the next time anyone opens the game or acts, and they
+  catch up if several were missed. Everyone's displayed AP is always correct once the page loads.
+- **Who can see what.** Everyone can see the board, HP, AP, range and (once the game starts)
+  classes. Only you can see your own turn timer. Private chat messages are visible only to the
+  sender and the chosen recipients.
 - **Free tier.** Supabase pauses free projects after about a week with no activity. A daily game
   keeps it awake. If it does pause, click **Restore** in the dashboard.
 - **Forgotten passwords.** There's no real email, so a password can't be reset by email. You can
   delete the user under Supabase → Authentication → Users so they can sign up again.
 - **Testing locally.** Opening `index.html` by double-clicking won't work, because browsers block
   JavaScript modules on `file://`. Use the GitHub Pages link, or run any local web server.
-- **Tweaking rules.** Rule values (30-minute timer, 3 HP, range 2, expand cost 2, board size 15)
-  are set in `schema.sql`. The 30 minutes also appears as `TURN_MS` in `app.js`.
 
-## Resetting everything
+## Updating or resetting the database
 
-To wipe the database and start again, run this in the SQL Editor, then run `schema.sql` again:
-
-```sql
-drop table if exists public.messages, public.events, public.player_private,
-  public.players, public.games, public.profiles cascade;
-drop trigger if exists on_auth_user_created on auth.users;
-drop function if exists public.handle_new_user, public.in_range, public.next_ap_time,
-  public._log, public._grant_ap, public.sync_game, public.create_game, public.join_game,
-  public.leave_game, public.start_game, public.act, public.send_message cascade;
-```
+`schema.sql` starts by removing any previous version, so to update or wipe everything just run the
+whole file again in the SQL Editor. This deletes all games and chat, but player accounts are kept.
