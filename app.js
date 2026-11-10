@@ -10,7 +10,7 @@ const CLASSES = {
   blitz:        { name: 'Blitz',        icon: '⚡', desc: () => 'Start with +1 AP.' },
   overclock:    { name: 'Overclock',    icon: '⏱️', desc: (g) => `Shorter turn timer: ${fmtMinutes((g?.turn_minutes ?? 30) * 5 / 6)} instead of ${g?.turn_minutes ?? 30} min.` },
   artillery:    { name: 'Artillery',    icon: '🎯', desc: () => '+1 range, but cannot shoot the 4 squares directly touching you.' },
-  medic:        { name: 'Medic',        icon: '➕', desc: () => 'Repair: 2 AP (+1 each use) restores 1 HP to you or a tank in range (up to its starting HP).' },
+  medic:        { name: 'Medic',        icon: '➕', desc: () => 'Repair: 2 AP restores 1 HP to you or a tank in range (up to its starting HP).' },
   sharpshooter: { name: 'Sharpshooter', icon: '🔭', desc: () => 'Each shot has a 1 in 6 chance to deal 2 damage.' },
 };
 
@@ -19,7 +19,7 @@ const sb = configured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const S = {
   user: null, username: null,
-  gameId: null, game: null, players: [], me: null, priv: null,
+  gameId: null, game: null, players: [], me: null, priv: null, privs: new Map(),
   events: [], messages: [],
   nextAp: null, clockOffset: 0, syncing: false,
   selected: null, chatTo: new Set(), settingsDirty: false,
@@ -83,10 +83,15 @@ function wrapDelta(a, b) {
   return Math.min(d, n - d);
 }
 
+// Secret stats (hp, ap, class) are only known for yourself, or everyone once the game ends.
+const secretsOf = (p) => S.privs.get(p.user_id) ?? null;
+const realReach = (p) => p.reach ?? 0;
+
 function inRange(from, x, y) {
   if (from?.x == null || x == null) return false;
+  const r = realReach(from);
   const dx = wrapDelta(from.x, x), dy = wrapDelta(from.y, y);
-  return dx * dx + dy * dy <= from.reach * from.reach;
+  return dx * dx + dy * dy <= r * r;
 }
 
 const adjacent = (a, b) => wrapDelta(a.x, b.x) + wrapDelta(a.y, b.y) === 1;
@@ -108,7 +113,7 @@ function costOf(action, pen = penalty()) {
   switch (action) {
     case 'move':   return 1 + (me.tank_class === 'skirmisher' ? Math.max(0, pen - 1) : pen);
     case 'expand': return me.expand_cost + pen;
-    case 'heal':   return me.heal_cost + pen;
+    case 'heal':   return 2 + pen;
     default:       return 1 + pen;
   }
 }
@@ -271,7 +276,7 @@ async function openGame(id) {
 
 function closeGame() {
   if (S.channel) sb.removeChannel(S.channel);
-  Object.assign(S, { channel: null, gameId: null, game: null, players: [], me: null, priv: null, nextAp: null });
+  Object.assign(S, { channel: null, gameId: null, game: null, players: [], me: null, priv: null, privs: new Map(), nextAp: null });
 }
 
 function subscribe(id) {
@@ -310,7 +315,7 @@ async function refreshGame() {
   const [g, p, pr, ev, msg] = await Promise.all([
     sb.from('games').select('*').eq('id', id).maybeSingle(),
     sb.from('players').select('*').eq('game_id', id).order('joined_at'),
-    sb.from('player_private').select('*').eq('game_id', id).eq('user_id', S.user.id).maybeSingle(),
+    sb.from('player_private').select('*').eq('game_id', id), // own row, or all once finished
     sb.from('events').select('*').eq('game_id', id).order('id', { ascending: false }).limit(150),
     sb.from('messages').select('*').eq('game_id', id).order('id', { ascending: false }).limit(200),
   ]);
@@ -323,10 +328,12 @@ async function refreshGame() {
   const wasWaiting = S.game?.status === 'waiting';
   S.game = g.data;
   S.players = p.data ?? [];
-  S.priv = pr.data;
+  S.privs = new Map((pr.data ?? []).map((r) => [r.user_id, r]));
+  S.priv = S.privs.get(S.user.id) ?? null;
   S.events = ev.data ?? [];
   S.messages = (msg.data ?? []).reverse();
-  S.me = byId(S.user.id) ?? null;
+  const pub = byId(S.user.id);
+  S.me = pub ? { ...pub, ...(S.priv ?? {}) } : null;
   if (S.selected && !byId(S.selected)?.alive) S.selected = null;
   if (wasWaiting && S.game.status === 'active') syncAp();
   renderGame();
@@ -393,7 +400,7 @@ const NUM_SETTINGS = ['board_size', 'start_hp', 'start_ap', 'start_range', 'expa
 
 // Same defaults as schema.sql; used if a lobby is missing a value.
 const DEFAULTS = {
-  board_size: 15, start_hp: 3, start_ap: 0, start_range: 2, expand_base: 2,
+  board_size: 15, start_hp: 3, start_ap: 1, start_range: 2, expand_base: 2,
   turn_minutes: 30, ap_amount: 1, ap_interval_minutes: 1440, ap_time: '17:00:00',
 };
 
@@ -443,7 +450,7 @@ function renderClassPicker() {
   const visible = S.game.classes_enabled && !!S.me;
   $('class-panel').classList.toggle('hidden', !visible);
   if (!visible) return;
-  const mine = S.priv?.chosen_class ?? '';
+  const mine = S.priv?.tank_class ?? '';
   const card = (key, title, desc) =>
     `<button type="button" class="class-card ${mine === key ? 'on' : ''}" data-class="${key}"><b>${title}</b><span>${esc(desc)}</span></button>`;
   $('class-list').innerHTML =
@@ -479,10 +486,13 @@ function renderBoard() {
       if (p) {
         if (p.user_id === S.user.id) cls.push('me');
         if (p.user_id === S.selected) cls.push('sel');
-        const klass = p.tank_class ? ` · ${CLASSES[p.tank_class]?.name}` : '';
+        const sec = secretsOf(p);
+        const info = sec
+          ? `${sec.tank_class ? ` · ${CLASSES[sec.tank_class]?.name}` : ''} · ${sec.hp}/${sec.max_hp} HP · ${sec.ap} AP · range ${sec.reach}`
+          : ' · stats hidden';
         inner = `<div class="tank" style="--h:${hue(p.username)}" data-uid="${p.user_id}"
-          title="${esc(p.username)}${klass} · ${p.hp}/${p.max_hp} HP · ${p.ap} AP · range ${p.reach}">
-          <span>${esc(p.username.slice(0, 3))}</span><i>${hearts(p.hp)}</i></div>`;
+          title="${esc(p.username)}${info}">
+          <span>${esc(p.username.slice(0, 3))}</span>${sec ? `<i>${hearts(sec.hp)}</i>` : ''}</div>`;
       }
       html += `<div class="${cls.join(' ')}">${inner}</div>`;
     }
@@ -503,11 +513,12 @@ function renderMe() {
   if (!me) { $('me-panel').innerHTML = '<p class="muted">You are spectating this game.</p>'; return; }
   const klass = me.tank_class
     ? `<p class="small" style="margin:8px 0 0"><b>${classLabel(me.tank_class)}</b> <span class="muted">${esc(CLASSES[me.tank_class].desc(S.game))}</span></p>` : '';
-  $('me-panel').innerHTML = `<h3>Your tank ${me.alive ? '' : '<span class="bad">— destroyed</span>'}</h3>
+  $('me-panel').innerHTML = `<h3>Your tank ${me.alive ? '' : '<span class="bad">— destroyed</span>'}
+      <span class="muted small">only your position is visible to others</span></h3>
     <div class="stats">
       <div><b>${me.hp}/${me.max_hp}</b><span>HP</span></div>
       <div><b>${me.ap}</b><span>AP</span></div>
-      <div><b>${me.reach}</b><span>Range</span></div>
+      <div><b>${realReach(me)}</b><span>Range</span></div>
       <div><b>${me.alive ? `${me.x},${me.y}` : '–'}</b><span>Position</span></div>
     </div>${klass}`;
 }
@@ -544,12 +555,12 @@ function renderActions() {
   if (tgt) {
     const where = !inR ? '<span class="bad">out of range</span>'
       : tooClose ? '<span class="warn">too close for artillery fire</span>' : '<span class="ok">in range</span>';
-    status = `Target: <b>${esc(tgt.username)}</b> (${tgt.hp}/${tgt.max_hp} HP, ${tgt.ap} AP) ${where}`;
+    status = `Target: <b>${esc(tgt.username)}</b> ${where}`;
   }
 
   const medic = me.tank_class === 'medic' ? `
     <button class="ghost" data-act="heal-self" ${dis(ch, me.hp >= me.max_hp)}>Repair yourself · ${ch} AP</button>
-    <button class="ghost" data-act="heal" ${dis(ch, !inR || !tgt || tgt.hp >= tgt.max_hp)}>Repair target · ${ch} AP</button>` : '';
+    <button class="ghost" data-act="heal" ${dis(ch, !inR)}>Repair target · ${ch} AP</button>` : '';
 
   el.innerHTML = `
     <h3>Actions ${pen ? `<span class="warn">turn timer running: +${pen} AP surcharge</span>` : ''}</h3>
@@ -563,7 +574,7 @@ function renderActions() {
         <p class="target">${status}</p>
         <button class="attack" data-act="attack" ${dis(c1, !inR || tooClose)}>Attack · ${c1} AP</button>
         <button data-act="supply" ${dis(c1, !inR)}>Supply 1 AP · ${c1} AP</button>
-        <button class="ghost" data-act="expand" ${dis(ce)}>Expand to range ${me.reach + 1} · ${ce} AP</button>
+        <button class="ghost" data-act="expand" ${dis(ce)}>Expand to range ${realReach(me) + 1} · ${ce} AP</button>
         ${medic}
       </div>
     </div>`;
@@ -586,7 +597,8 @@ async function doAction(action, { dir = null, target = null } = {}) {
   const tgt = target ? byId(target) : null;
   if (cost > base && !confirm(`Your turn timer is still running, so this costs ${cost} AP instead of ${base}, and restarts the timer. Continue?`)) return;
   if (action === 'attack' && !confirm(`Fire at ${tgt.username}?`)) return;
-  if (action === 'expand' && cost === base && !confirm(`Spend ${cost} AP to expand your range to ${S.me.reach + 1}?`)) return;
+  if (action === 'expand' && cost === base && !confirm(`Spend ${cost} AP to expand your range to ${realReach(S.me) + 1}?`)) return;
+  if (action === 'heal' && target !== S.user.id && !confirm(`Repair ${tgt.username} for ${cost} AP? If they're already at full health the AP is wasted (and you won't be told).`)) return;
 
   const { error } = await sb.rpc('act', {
     p_game: S.gameId, p_action: action, p_target: target, p_dir: dir, p_max_cost: cost,
@@ -605,8 +617,11 @@ function renderPlayers() {
   $('player-list').innerHTML = list.map((p) => {
     const cls = [!p.alive && 'dead', p.user_id === S.selected && 'sel'].filter(Boolean).join(' ');
     const near = p.alive && S.me?.alive && p.user_id !== S.user.id && inRange(S.me, p.x, p.y) ? ' <span class="ok small">in range</span>' : '';
-    const klass = p.tank_class ? `<span class="class-tag">${classLabel(p.tank_class)}</span>` : '';
-    const meta = p.alive ? `${hearts(p.hp)} · ${p.ap} AP · R${p.reach}` : 'destroyed';
+    const sec = secretsOf(p);
+    const klass = sec?.tank_class ? `<span class="class-tag">${classLabel(sec.tank_class)}</span>` : '';
+    const meta = !p.alive ? 'destroyed'
+      : sec ? `${hearts(sec.hp)} · ${sec.ap} AP · R${sec.reach}`
+      : '';
     return `<li class="${cls}" data-uid="${p.user_id}">
       <span class="dot" style="--h:${hue(p.username)}"></span>
       <span>${esc(p.username)}${p.user_id === S.user.id ? ' <span class="muted small">(you)</span>' : ''}${klass}${near}</span>

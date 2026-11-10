@@ -50,7 +50,8 @@ editing the page.
 
 | | |
 |---|---|
-| Start | Random empty square, 3 HP, 0 AP, range 2 |
+| Start | Random empty square, 3 HP, 1 AP, range 2 |
+| Secrets | Others only see your position. HP, AP, range, class, turn timer and every action you take are private. Everything is revealed when the game ends |
 | AP | +1 AP to every surviving tank each day at 5pm (lobby timezone) |
 | Mobilise | 1 AP: move one square orthogonally into an empty square (wraps around edges) |
 | Attack | 1 AP: target in range loses 1 HP. At 0 HP the tank is removed for good |
@@ -77,7 +78,7 @@ who doesn't pick gets a random one.
 | ⚡ Blitz | Start with +1 AP |
 | ⏱️ Overclock | Turn timer is 5/6 as long (25 min when the lobby uses 30) |
 | 🎯 Artillery | +1 range, but cannot shoot the 4 squares directly touching it (diagonals are fine; supplying still works) |
-| ➕ Medic | Repair action: 2 AP (+1 each use) restores 1 HP to itself or a tank in range, up to that tank's starting HP |
+| ➕ Medic | Repair action: always 2 AP, restores 1 HP to itself or a tank in range, up to that tank's starting HP. Repairing someone already at full HP wastes the AP, and the Medic isn't told |
 | 🔭 Sharpshooter | Each shot has a 1 in 6 chance to deal 2 damage |
 
 Not included, as requested: hearts, gifting hearts, supply drops, revives and the jury.
@@ -86,9 +87,10 @@ Not included, as requested: hearts, gifting hearts, supply drops, revives and th
 
 - **No scheduler needed.** AP drops are added the next time anyone opens the game or acts, and they
   catch up if several were missed. Everyone's displayed AP is always correct once the page loads.
-- **Who can see what.** Everyone can see the board, HP, AP, range and (once the game starts)
-  classes. Only you can see your own turn timer. Private chat messages are visible only to the
-  sender and the chosen recipients.
+- **Who can see what.** The only thing you know for certain about other tanks is their position.
+  The public battle log shows lobby events, AP drops and "X was destroyed". Your own log shows
+  your actions and their costs. If someone hits, supplies, repairs or destroys you, you're told
+  who did it. Private chat messages are visible only to the sender and the chosen recipients.
 - **Free tier.** Supabase pauses free projects after about a week with no activity. A daily game
   keeps it awake. If it does pause, click **Restore** in the dashboard.
 - **Forgotten passwords.** There's no real email, so a password can't be reset by email. You can
