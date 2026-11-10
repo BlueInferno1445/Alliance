@@ -40,9 +40,16 @@ editing the page.
 ## 3. Play
 
 1. Everyone opens the site and creates an account with a username and password.
-2. One person creates a lobby and chooses the timezone that "5pm" means. Then they press
-   **Copy invite link** and send it to everyone else.
-3. The others open the link and press **Join**. When everyone's in, the host presses **Start game**.
+2. One person creates a lobby, chooses its timezone and whether it's **public** or **private**.
+   Then they press **Copy invite link** and send it to everyone else.
+   - Public lobbies appear on everyone's home page and anyone can join.
+   - Private lobbies don't appear anywhere. Only people with the invite link can see and join
+     them, and nobody outside the game can spectate.
+3. The others open the link and press **Join**. Before starting, the host can **Kick** anyone from
+   the waiting room, and kicked players can't rejoin that lobby. When everyone's in, the host
+   presses **Start game**.
+4. The host can press **Close lobby** at any time during or after the game. This ends the game
+   and deletes the board, battle log and chat for everyone.
 
 ---
 
@@ -61,14 +68,26 @@ editing the page.
 | Range | Circular with wrap-around: in range if dx² + dy² ≤ range² |
 | End | Last tank alive wins |
 
-These are the defaults. In the waiting room the host can change the board size, starting HP/AP/range,
-Expand's starting cost, turn timer length, AP per drop, how often AP drops (every N minutes, hours
-or days), the drop time of day, the timezone, and whether classes are on. Everything locks when
-the game starts.
+These are the defaults. In the waiting room the host can change them, within these limits:
+
+| Setting | Allowed |
+|---|---|
+| Board size | 3–50 |
+| Starting HP | 1–99 |
+| Starting AP | 0–999 |
+| Starting range | 1–50 |
+| Expand starting cost | 0–99 |
+| AP per drop | 1–999 |
+| Turn timer | 1 second to 7 days |
+| AP drop every | 1 second to 30 days, at a chosen time of day and timezone |
+| Classes / private lobby | on or off |
+
+Everything locks when the game starts. With very fast AP drops (under 10 minutes apart) the
+"AP drop" line is left out of the battle log so it doesn't flood it.
 
 ### Classes (optional, toggled per lobby)
 
-Players pick a class in the waiting room. Nobody else can see it until the game starts, and anyone
+Players pick a class in the waiting room. Nobody else can see it until the game ends, and anyone
 who doesn't pick gets a random one.
 
 | Class | Effect |
@@ -78,8 +97,9 @@ who doesn't pick gets a random one.
 | ⚡ Blitz | Start with +1 AP |
 | ⏱️ Overclock | Turn timer is 5/6 as long (25 min when the lobby uses 30) |
 | 🎯 Artillery | +1 range, but cannot shoot the 4 squares directly touching it (diagonals are fine; supplying still works) |
-| ➕ Medic | Repair action: always 2 AP, restores 1 HP to itself or a tank in range, up to that tank's starting HP. Repairing someone already at full HP wastes the AP, and the Medic isn't told |
+| ➕ Medic | Repair: 2 AP restores 1 HP to itself or a tank in range, up to that tank's starting HP. Repairing someone already at full HP wastes the AP, and the Medic isn't told |
 | 🔭 Sharpshooter | Each shot has a 1 in 6 chance to deal 2 damage |
+| 🕵️ Spy | Chooses (free, any time) whose name appears in the target's log when it attacks, destroys or supplies someone, e.g. "You were hit for 1 damage by C" |
 
 Not included, as requested: hearts, gifting hearts, supply drops, revives and the jury.
 

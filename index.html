@@ -57,6 +57,7 @@
               <label>Lobby name <input id="create-name" maxlength="40" required placeholder="Friday night war"></label>
               <label>Timezone for AP drops <select id="create-tz"></select></label>
               <label class="check"><input type="checkbox" id="create-classes"> Enable tank classes</label>
+              <label class="check"><input type="checkbox" id="create-private"> Private lobby (invite link only)</label>
               <p class="muted small">You can change every rule (HP, AP schedule, turn timer…) in the lobby before starting.</p>
               <button type="submit">Create lobby</button>
             </form>
@@ -74,6 +75,7 @@
         <span id="g-status" class="badge"></span>
         <span id="g-tz" class="muted small"></span>
         <button id="copy-link" class="ghost small">Copy invite link</button>
+        <button id="close-btn" class="danger small hidden">Close lobby</button>
       </div>
 
       <div id="waiting" class="game-grid hidden">
@@ -91,28 +93,33 @@
           </div>
           <div class="panel hidden" id="class-panel">
             <h3>Choose your class</h3>
-            <p class="muted small">Hidden from other players. If you don't pick one, you get a random class.</p>
+            <p class="muted small">Hidden from other players until the game ends. If you don't pick one, you get a random class.</p>
             <div id="class-list" class="class-list"></div>
           </div>
         </div>
         <div class="panel">
           <h3>Game settings <span id="settings-note" class="muted small"></span></h3>
           <form id="settings-form" class="settings">
-            <label>Board size <input type="number" name="board_size" min="5" max="30"></label>
-            <label>Starting HP <input type="number" name="start_hp" min="1" max="10"></label>
-            <label>Starting AP <input type="number" name="start_ap" min="0" max="20"></label>
-            <label>Starting range <input type="number" name="start_range" min="1" max="15"></label>
-            <label>Expand starting cost <input type="number" name="expand_base" min="1" max="10"></label>
-            <label>Turn timer (minutes) <input type="number" name="turn_minutes" min="1" max="1440"></label>
-            <label>AP per drop <input type="number" name="ap_amount" min="1" max="10"></label>
+            <label>Board size <input type="number" name="board_size" min="3" max="50"></label>
+            <label>Starting HP <input type="number" name="start_hp" min="1" max="99"></label>
+            <label>Starting AP <input type="number" name="start_ap" min="0" max="999"></label>
+            <label>Starting range <input type="number" name="start_range" min="1" max="50"></label>
+            <label>Expand starting cost <input type="number" name="expand_base" min="0" max="99"></label>
+            <label>AP per drop <input type="number" name="ap_amount" min="1" max="999"></label>
+            <label>Turn timer
+              <span class="pair"><input type="number" name="turn_every" min="1">
+                <select name="turn_unit"><option value="1">seconds</option><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></span>
+            </label>
             <label>AP drop every
-              <span class="pair"><input type="number" name="ap_every" min="1" max="10080">
-                <select name="ap_unit"><option value="1">minutes</option><option value="60">hours</option><option value="1440">days</option></select></span>
+              <span class="pair"><input type="number" name="ap_every" min="1">
+                <select name="ap_unit"><option value="1">seconds</option><option value="60">minutes</option><option value="3600">hours</option><option value="86400">days</option></select></span>
             </label>
             <label>Drop time of day <input type="time" name="ap_time"></label>
             <label>Timezone <select name="timezone" id="settings-tz"></select></label>
             <label class="check wide"><input type="checkbox" name="classes_enabled"> Tank classes enabled</label>
-            <p class="muted small wide">For intervals shorter than a day, drops line up with the time of day (e.g. every 6 hours from 5pm = 5am, 11am, 5pm, 11pm).</p>
+            <label class="check wide"><input type="checkbox" name="is_private"> Private lobby (invite link only)</label>
+            <p class="muted small wide">Limits: board 3–50, turn timer 1 second to 7 days, AP drops every 1 second to 30 days.
+              For drops less than a day apart, the timing lines up with the time of day (e.g. every 6 hours from 5pm = 5am, 11am, 5pm, 11pm).</p>
             <button type="submit" id="settings-save" class="wide">Save settings</button>
           </form>
         </div>

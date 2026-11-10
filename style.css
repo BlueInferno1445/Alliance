@@ -117,7 +117,8 @@ button:disabled { opacity: .35; cursor: not-allowed; }
 .player-list li.dead { opacity: .45; text-decoration: line-through; cursor: default; }
 .player-list .dot { width: 12px; height: 12px; border-radius: 3px; background: hsl(var(--h) 55% 42%); }
 .player-list .meta { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.wait-list li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+.wait-list li { padding: 5px 0; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 6px; }
+.wait-list .kick { margin-left: auto; color: var(--danger); border-color: var(--danger); padding: 2px 8px; }
 
 .event-log { max-height: 340px; overflow-y: auto; font-size: 13.5px; }
 .event-log li { padding: 5px 0; border-bottom: 1px solid var(--line); }

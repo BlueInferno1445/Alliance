@@ -6,12 +6,13 @@ const EMAIL_DOMAIN = 'players.alliance.game';
 
 const CLASSES = {
   bunker:       { name: 'Bunker',       icon: '🛡️', desc: () => '+1 HP.' },
-  skirmisher:   { name: 'Skirmisher',   icon: '💨', desc: () => 'Reduce the turn timer penalty by 1 AP when moving' },
+  skirmisher:   { name: 'Skirmisher',   icon: '💨', desc: () => 'Moving costs 1 less turn-timer surcharge (2 quick moves = 1+1, 3 = 4 AP total).' },
   blitz:        { name: 'Blitz',        icon: '⚡', desc: () => 'Start with +1 AP.' },
-  overclock:    { name: 'Overclock',    icon: '⏱️', desc: (g) => `Shorter turn timer: ${fmtMinutes((g?.turn_minutes ?? 30) * 5 / 6)} instead of ${g?.turn_minutes ?? 30} min.` },
+  overclock:    { name: 'Overclock',    icon: '⏱️', desc: (g) => `Shorter turn timer: ${fmtSeconds(Math.max(1, Math.round((g?.turn_seconds ?? 1800) * 5 / 6)))} instead of ${fmtSeconds(g?.turn_seconds ?? 1800)}.` },
   artillery:    { name: 'Artillery',    icon: '🎯', desc: () => '+1 range, but cannot shoot the 4 squares directly touching you.' },
   medic:        { name: 'Medic',        icon: '➕', desc: () => 'Repair: 2 AP restores 1 HP to you or a tank in range (up to its starting HP).' },
   sharpshooter: { name: 'Sharpshooter', icon: '🔭', desc: () => 'Each shot has a 1 in 6 chance to deal 2 damage.' },
+  spy:          { name: 'Spy',          icon: '🕵️', desc: () => 'Choose whose name your attacks and supplies appear to come from in the target\'s battle log.' },
 };
 
 const configured = !SUPABASE_URL.includes('YOUR-') && !SUPABASE_ANON_KEY.includes('YOUR-');
@@ -19,7 +20,7 @@ const sb = configured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const S = {
   user: null, username: null,
-  gameId: null, game: null, players: [], me: null, priv: null, privs: new Map(),
+  gameId: null, game: null, players: [], me: null, priv: null, privs: new Map(), outsider: false,
   events: [], messages: [],
   nextAp: null, clockOffset: 0, syncing: false,
   selected: null, chatTo: new Set(), settingsDirty: false,
@@ -32,7 +33,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const now = () => Date.now() + S.clockOffset;
 const byId = (uid) => S.players.find((p) => p.user_id === uid);
-const hearts = (hp) => (hp <= 4 ? '♥'.repeat(Math.max(0, hp)) : `${hp}♥`);
+const hearts = (hp) => (hp == null ? '' : hp <= 4 ? '♥'.repeat(Math.max(0, hp)) : `${hp}♥`);
 const classLabel = (k) => (CLASSES[k] ? `${CLASSES[k].icon} ${CLASSES[k].name}` : '');
 
 function toast(msg, bad = false) {
@@ -55,9 +56,19 @@ function fmtDuration(ms) {
   return h ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
 }
 
-function fmtMinutes(mins) {
-  const s = Math.round(mins * 60);
-  return s % 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s / 60} min`;
+// e.g. 90 -> "1 min 30 sec", 86400 -> "24 hours", 259200 -> "3 days"
+function fmtSeconds(total) {
+  let s = Math.round(total);
+  const units = [['day', 86400], ['hour', 3600], ['min', 60], ['sec', 1]]
+    .filter(([name]) => name !== 'day' || s >= 172800); // up to 48h reads better in hours
+  const parts = [];
+  for (const [name, size] of units) {
+    const n = Math.floor(s / size);
+    if (!n) continue;
+    parts.push(`${n} ${name}${n > 1 && (name === 'day' || name === 'hour') ? 's' : ''}`);
+    s -= n * size;
+  }
+  return parts.slice(0, 2).join(' ') || '0 sec';
 }
 
 function fmtTime(ts) {
@@ -65,11 +76,10 @@ function fmtTime(ts) {
 }
 
 function scheduleText(g) {
-  const m = g.ap_interval_minutes, t = g.ap_time.slice(0, 5);
-  const every = m % 1440 === 0 ? (m === 1440 ? 'every day' : `every ${m / 1440} days`)
-    : m % 60 === 0 ? (m === 60 ? 'every hour' : `every ${m / 60} hours`)
-    : `every ${m} min`;
-  return `+${g.ap_amount} AP ${every} ${m % 1440 === 0 ? 'at' : 'from'} ${t} (${g.timezone})`;
+  const iv = g.ap_interval_seconds ?? 86400, t = (g.ap_time ?? '17:00').slice(0, 5);
+  const daily = iv % 86400 === 0;
+  const every = iv === 86400 ? 'every day' : `every ${fmtSeconds(iv)}`;
+  return `+${g.ap_amount} AP ${every} ${daily ? 'at' : 'from'} ${t} (${g.timezone})`;
 }
 
 function hue(name) {
@@ -84,7 +94,10 @@ function wrapDelta(a, b) {
 }
 
 // Secret stats (hp, ap, class) are only known for yourself, or everyone once the game ends.
-const secretsOf = (p) => S.privs.get(p.user_id) ?? null;
+const secretsOf = (p) => {
+  const row = S.privs.get(p.user_id);
+  return row && row.hp != null ? row : null; // null if unknown (or the database is out of date)
+};
 const realReach = (p) => p.reach ?? 0;
 
 function inRange(from, x, y) {
@@ -98,7 +111,7 @@ const adjacent = (a, b) => wrapDelta(a.x, b.x) + wrapDelta(a.y, b.y) === 1;
 
 // ---------------------------------------------------------------- costs
 function turnMs() {
-  return (S.priv?.turn_seconds ?? (S.game?.turn_minutes ?? 30) * 60) * 1000;
+  return (S.priv?.turn_seconds ?? S.game?.turn_seconds ?? 1800) * 1000;
 }
 
 // Extra AP owed because the turn timer is still running.
@@ -198,7 +211,7 @@ async function openLobby() {
 
 async function loadLobby() {
   const { data, error } = await sb.from('games')
-    .select('id,name,status,host_id,timezone,classes_enabled,created_at,winner_id,players(user_id,username,alive)')
+    .select('id,name,status,host_id,timezone,classes_enabled,is_private,created_at,winner_id,players(user_id,username,alive)')
     .order('created_at', { ascending: false })
     .limit(60);
   if (error) return toast(error.message, true);
@@ -225,7 +238,7 @@ function gameCard(g, member) {
     ? `<button data-join="${g.id}" class="small">Join</button>`
     : `<button data-open="${g.id}" class="small ghost">${member ? 'Open' : 'Watch'}</button>`;
   return `<div class="card">
-    <div><b>${esc(g.name)}</b><span class="muted small">Host ${esc(host)} · ${info}${g.classes_enabled ? ' · classes' : ''}</span></div>
+    <div><b>${esc(g.name)}</b><span class="muted small">Host ${esc(host)} · ${info}${g.classes_enabled ? ' · classes' : ''}${g.is_private ? ' · 🔒 private' : ''}</span></div>
     <div class="row"><span class="badge ${g.status}">${g.status}</span>${btn}</div></div>`;
 }
 
@@ -242,6 +255,7 @@ $('create-form').addEventListener('submit', async (e) => {
   const { data, error } = await sb.rpc('create_game', {
     p_name: $('create-name').value.trim(), p_timezone: $('create-tz').value,
     p_classes: $('create-classes').checked,
+    p_private: $('create-private').checked,
   });
   if (error) return toast(error.message, true);
   $('create-name').value = '';
@@ -276,7 +290,7 @@ async function openGame(id) {
 
 function closeGame() {
   if (S.channel) sb.removeChannel(S.channel);
-  Object.assign(S, { channel: null, gameId: null, game: null, players: [], me: null, priv: null, privs: new Map(), nextAp: null });
+  Object.assign(S, { channel: null, gameId: null, game: null, players: [], me: null, priv: null, privs: new Map(), nextAp: null, outsider: false });
 }
 
 function subscribe(id) {
@@ -320,13 +334,27 @@ async function refreshGame() {
     sb.from('messages').select('*').eq('game_id', id).order('id', { ascending: false }).limit(200),
   ]);
   if (id !== S.gameId) return;
-  if (!g.data) {
-    toast('That game no longer exists', true);
-    location.hash = '';
-    return;
+  let game = g.data;
+  S.outsider = false;
+  if (!game) {
+    // Private lobby opened from an invite link by someone who hasn't joined yet
+    const { data: peek } = await sb.rpc('peek_game', { p_game: id });
+    if (id !== S.gameId) return;
+    if (!peek) {
+      toast('That game no longer exists', true);
+      location.hash = '';
+      return;
+    }
+    if (peek.status !== 'waiting') {
+      toast('That private game has already started. Only its players can view it.', true);
+      location.hash = '';
+      return;
+    }
+    game = peek;
+    S.outsider = true;
   }
   const wasWaiting = S.game?.status === 'waiting';
-  S.game = g.data;
+  S.game = game;
   S.players = p.data ?? [];
   S.privs = new Map((pr.data ?? []).map((r) => [r.user_id, r]));
   S.priv = S.privs.get(S.user.id) ?? null;
@@ -345,8 +373,9 @@ function renderGame() {
   $('g-name').textContent = g.name;
   $('g-status').textContent = g.status;
   $('g-status').className = 'badge ' + g.status;
-  $('g-tz').textContent = `${scheduleText(g)} · ${g.turn_minutes}-min turn timer`
-    + (g.classes_enabled ? ' · classes on' : '');
+  $('g-tz').textContent = `${scheduleText(g)} · ${fmtSeconds(g.turn_seconds ?? 1800)} turn timer`
+    + (g.classes_enabled ? ' · classes on' : '') + (g.is_private ? ' · 🔒 private' : '');
+  $('close-btn').classList.toggle('hidden', g.host_id !== S.user.id || g.status === 'waiting');
 
   const waiting = g.status === 'waiting';
   $('waiting').classList.toggle('hidden', !waiting);
@@ -365,8 +394,14 @@ function renderGame() {
 
 function renderWaiting() {
   const isHost = S.game.host_id === S.user.id;
-  $('wait-list').innerHTML = S.players.map((p) =>
-    `<li>${esc(p.username)}${p.user_id === S.game.host_id ? ' <span class="muted small">(host)</span>' : ''}</li>`).join('');
+  $('wait-list').innerHTML = S.outsider
+    ? `<li class="muted">${S.game.player_count} player(s) waiting, hosted by ${esc(S.game.host_name)}. Join to see who's here.</li>`
+    : S.players.map((p) => {
+      const host = p.user_id === S.game.host_id;
+      const kick = isHost && !host
+        ? ` <button type="button" class="ghost small kick" data-kick="${p.user_id}">Kick</button>` : '';
+      return `<li>${esc(p.username)}${host ? ' <span class="muted small">(host)</span>' : ''}${kick}</li>`;
+    }).join('');
   $('join-btn').classList.toggle('hidden', !!S.me);
   $('start-btn').classList.toggle('hidden', !isHost);
   $('start-btn').disabled = S.players.length < 2;
@@ -375,6 +410,16 @@ function renderWaiting() {
 }
 
 $('join-btn').onclick = () => joinGame(S.gameId);
+$('wait-list').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-kick]');
+  if (!b) return;
+  const name = byId(b.dataset.kick)?.username ?? 'this player';
+  if (!confirm(`Kick ${name} from the lobby? They won't be able to rejoin it.`)) return;
+  const { error } = await sb.rpc('kick_player', { p_game: S.gameId, p_user: b.dataset.kick });
+  if (error) return toast(error.message, true);
+  toast(`${name} was removed`);
+  refreshGame();
+});
 $('start-btn').onclick = async () => {
   if (S.settingsDirty && !confirm('You have unsaved settings changes. Start anyway with the saved settings?')) return;
   if (!confirm(`Start the game with ${S.players.length} players? Nobody else can join and settings are locked after this.`)) return;
@@ -390,19 +435,38 @@ $('leave-btn').onclick = async () => {
   if (error) return toast(error.message, true);
   location.hash = '';
 };
+$('close-btn').onclick = async () => {
+  const msg = S.game.status === 'active'
+    ? 'Close this lobby now? The game ends immediately and the board, battle log and chat are deleted for everyone.'
+    : 'Close this lobby? The board, battle log and chat are deleted for everyone.';
+  if (!confirm(msg)) return;
+  const { error } = await sb.rpc('close_game', { p_game: S.gameId });
+  if (error) return toast(error.message, true);
+  toast('Lobby closed');
+  location.hash = '';
+};
 $('copy-link').onclick = async () => {
   try { await navigator.clipboard.writeText(location.href); toast('Invite link copied'); }
   catch { prompt('Copy this link:', location.href); }
 };
 
 // ---------------------------------------------------------------- lobby settings
-const NUM_SETTINGS = ['board_size', 'start_hp', 'start_ap', 'start_range', 'expand_base', 'turn_minutes', 'ap_amount'];
+const NUM_SETTINGS = ['board_size', 'start_hp', 'start_ap', 'start_range', 'expand_base', 'ap_amount'];
 
 // Same defaults as schema.sql; used if a lobby is missing a value.
 const DEFAULTS = {
   board_size: 15, start_hp: 3, start_ap: 1, start_range: 2, expand_base: 2,
-  turn_minutes: 30, ap_amount: 1, ap_interval_minutes: 1440, ap_time: '17:00:00',
+  turn_seconds: 1800, ap_amount: 1, ap_interval_seconds: 86400, ap_time: '17:00:00',
 };
+
+// Pick the biggest unit that divides evenly, but never days for "24 hours"
+function splitDuration(secs, allowDays) {
+  for (const unit of [86400, 3600, 60, 1]) {
+    if (unit === 86400 && (!allowDays || secs < 172800)) continue;
+    if (secs % unit === 0) return [secs / unit, unit];
+  }
+  return [secs, 1];
+}
 
 function renderSettings() {
   const f = $('settings-form'), g = S.game, isHost = g.host_id === S.user.id;
@@ -413,10 +477,12 @@ function renderSettings() {
 
   const el = f.elements;
   for (const k of NUM_SETTINGS) el[k].value = g[k] ?? DEFAULTS[k];
-  const m = g.ap_interval_minutes ?? DEFAULTS.ap_interval_minutes;
-  const unit = m % 60 === 0 ? 60 : 1; // show daily drops as "24 hours"
-  el.ap_unit.value = String(unit);
-  el.ap_every.value = m / unit;
+  const [turnN, turnU] = splitDuration(g.turn_seconds ?? DEFAULTS.turn_seconds, true);
+  el.turn_every.value = turnN;
+  el.turn_unit.value = String(turnU);
+  const [apN, apU] = splitDuration(g.ap_interval_seconds ?? DEFAULTS.ap_interval_seconds, true);
+  el.ap_every.value = apN;
+  el.ap_unit.value = String(apU);
   el.ap_time.value = (g.ap_time ?? DEFAULTS.ap_time).slice(0, 5);
   const tz = g.timezone ?? myTz;
   if (![...el.timezone.options].some((o) => o.value === tz)) {
@@ -424,6 +490,7 @@ function renderSettings() {
   }
   el.timezone.value = tz;
   el.classes_enabled.checked = !!g.classes_enabled;
+  el.is_private.checked = !!g.is_private;
 }
 
 $('settings-form').addEventListener('input', () => (S.settingsDirty = true));
@@ -432,12 +499,15 @@ $('settings-form').addEventListener('submit', async (e) => {
   const el = e.target.elements;
   const p = {};
   for (const k of NUM_SETTINGS) p[k] = parseInt(el[k].value, 10);
-  p.ap_interval_minutes = parseInt(el.ap_every.value, 10) * parseInt(el.ap_unit.value, 10);
+  p.turn_seconds = parseInt(el.turn_every.value, 10) * parseInt(el.turn_unit.value, 10);
+  p.ap_interval_seconds = parseInt(el.ap_every.value, 10) * parseInt(el.ap_unit.value, 10);
   p.ap_time = el.ap_time.value || '17:00';
   p.timezone = el.timezone.value;
   p.classes_enabled = el.classes_enabled.checked;
+  p.is_private = el.is_private.checked;
   if (Object.values(p).some((v) => typeof v === 'number' && Number.isNaN(v))) return toast('Fill in every setting', true);
-  if (p.ap_interval_minutes < 5 || p.ap_interval_minutes > 10080) return toast('AP interval must be between 5 minutes and 7 days', true);
+  if (p.turn_seconds < 1 || p.turn_seconds > 604800) return toast('Turn timer must be between 1 second and 7 days', true);
+  if (p.ap_interval_seconds < 1 || p.ap_interval_seconds > 2592000) return toast('AP drops must be between every 1 second and every 30 days', true);
 
   const { error } = await sb.rpc('update_settings', { p_game: S.gameId, p });
   if (error) return toast(error.message, true);
@@ -562,6 +632,15 @@ function renderActions() {
     <button class="ghost" data-act="heal-self" ${dis(ch, me.hp >= me.max_hp)}>Repair yourself · ${ch} AP</button>
     <button class="ghost" data-act="heal" ${dis(ch, !inR)}>Repair target · ${ch} AP</button>` : '';
 
+  const spy = me.tank_class === 'spy' ? `
+    <label class="small" style="margin:4px 0 0">🕵️ Appear to targets as
+      <select id="disguise">
+        <option value="">yourself (${esc(me.username)})</option>
+        ${S.players.filter((p) => p.user_id !== S.user.id)
+          .map((p) => `<option value="${p.user_id}" ${me.disguise === p.user_id ? 'selected' : ''}>${esc(p.username)}${p.alive ? '' : ' (destroyed)'}</option>`).join('')}
+      </select>
+    </label>` : '';
+
   el.innerHTML = `
     <h3>Actions ${pen ? `<span class="warn">turn timer running: +${pen} AP surcharge</span>` : ''}</h3>
     <div class="act-grid">
@@ -575,10 +654,19 @@ function renderActions() {
         <button class="attack" data-act="attack" ${dis(c1, !inR || tooClose)}>Attack · ${c1} AP</button>
         <button data-act="supply" ${dis(c1, !inR)}>Supply 1 AP · ${c1} AP</button>
         <button class="ghost" data-act="expand" ${dis(ce)}>Expand to range ${realReach(me) + 1} · ${ce} AP</button>
-        ${medic}
+        ${medic}${spy}
       </div>
     </div>`;
 }
+
+$('actions').addEventListener('change', async (e) => {
+  if (e.target.id !== 'disguise') return;
+  const as = e.target.value || null;
+  const { error } = await sb.rpc('set_disguise', { p_game: S.gameId, p_as: as });
+  if (error) return toast(error.message, true);
+  toast(as ? `Disguised as ${byId(as)?.username}` : 'Disguise removed');
+  refreshGame();
+});
 
 $('actions').addEventListener('click', (e) => {
   const b = e.target.closest('button');
@@ -595,10 +683,19 @@ async function doAction(action, { dir = null, target = null } = {}) {
   const base = costOf(action, 0);
   const cost = costOf(action, pen);
   const tgt = target ? byId(target) : null;
-  if (cost > base && !confirm(`Your turn timer is still running, so this costs ${cost} AP instead of ${base}, and restarts the timer. Continue?`)) return;
-  if (action === 'attack' && !confirm(`Fire at ${tgt.username}?`)) return;
-  if (action === 'expand' && cost === base && !confirm(`Spend ${cost} AP to expand your range to ${realReach(S.me) + 1}?`)) return;
-  if (action === 'heal' && target !== S.user.id && !confirm(`Repair ${tgt.username} for ${cost} AP? If they're already at full health the AP is wasted (and you won't be told).`)) return;
+
+  // Every action asks first, so a misclick never spends AP
+  const what = {
+    move: `Mobilise ${dir}`,
+    attack: `Attack ${tgt?.username}`,
+    supply: `Supply 1 AP to ${tgt?.username}`,
+    expand: `Expand your range to ${realReach(S.me) + 1}`,
+    heal: target === S.user.id ? 'Repair your own tank' : `Repair ${tgt?.username}`,
+  }[action];
+  let msg = `${what} for ${cost} AP?`;
+  if (cost > base) msg += `\n\nYour turn timer is still running, so this costs ${cost} AP instead of ${base}, and restarts the timer.`;
+  if (action === 'heal' && target !== S.user.id) msg += `\n\nIf they're already at full health the AP is wasted (and you won't be told).`;
+  if (!confirm(msg)) return;
 
   const { error } = await sb.rpc('act', {
     p_game: S.gameId, p_action: action, p_target: target, p_dir: dir, p_max_cost: cost,
